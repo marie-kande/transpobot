@@ -2,17 +2,22 @@
 TranspoBot — Squelette Backend FastAPI
 Projet GLSi L3 — ESP/UCAD
 """
+import os
+import re
+import httpx
+import mysql.connector
+from dotenv import load_dotenv
+
+# Charger les variables d'environnement tout de suite
+load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import mysql.connector
-import os
-from dotenv import load_dotenv
-load_dotenv()
-import re
-import httpx
+
+# Initialisation de l'application
+app = FastAPI()
 
 app = FastAPI(title="TranspoBot API", version="1.0.0")
 
