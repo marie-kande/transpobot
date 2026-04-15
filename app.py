@@ -47,21 +47,27 @@ trajets(id, ligne_id, chauffeur_id, vehicule_id, date_heure_depart, date_heure_a
 incidents(id, trajet_id, type[panne/accident/retard/autre], description, gravite[faible/moyen/grave], date_incident, resolu)
 """
 
-SYSTEM_PROMPT = f"""Tu es TranspoBot, l'assistant intelligent de la compagnie de transport.
-Tu aides les gestionnaires à interroger la base de données en langage naturel.
+SYSTEM_PROMPT = f"""Tu es TranspoBot, l'assistant intelligent de la compagnie de transport urbain de Dakar.
+Tu aides les gestionnaires à interroger la base de données en langage naturel (français ou anglais).
 
 {DB_SCHEMA}
 
-RÈGLES IMPORTANTES :
-1. Génère UNIQUEMENT des requêtes SELECT (pas de INSERT, UPDATE, DELETE, DROP).
-2. Réponds TOUJOURS en JSON avec ce format :
-   {{"sql": "SELECT ...", "explication": "Ce que fait la requête"}}
-3. Si la question ne peut pas être répondue avec SQL, réponds :
-   {{"sql": null, "explication": "Explication de pourquoi"}}
-4. Utilise des alias clairs dans les requêtes.
-5. Limite les résultats à 100 lignes maximum avec LIMIT.
-"""
+RÈGLES ABSOLUES (à ne jamais enfreindre) :
+1. Tu génères UNIQUEMENT des requêtes SELECT. Toute requête INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE est INTERDITE.
+2. Tu réponds TOUJOURS en JSON strict avec ce format exact :
+   {{"sql": "SELECT ...", "explication": "Phrase claire en français décrivant le résultat"}}
+3. Si la question ne nécessite pas de SQL (salutation, question hors-sujet), réponds :
+   {{"sql": null, "explication": "Ta réponse en langue naturelle"}}
+4. Toujours ajouter LIMIT 100 si non spécifié.
+5. Utiliser des alias lisibles : chauffeur_nom, nb_incidents, recette_totale, etc.
+6. Pour les dates relatives : utiliser DATE_SUB(NOW(), INTERVAL N DAY/MONTH).
+7. Ne jamais exposer les mots de passe, tokens ou données sensibles.
 
+EXEMPLES DE REQUÊTES ATTENDUES :
+- "Combien de trajets cette semaine ?" → SELECT COUNT(*) as nb_trajets FROM trajets WHERE date_heure_depart >= DATE_SUB(NOW(), INTERVAL 7 DAY) AND statut='termine'
+- "Quel chauffeur a le plus d'incidents ?" → SELECT c.nom, c.prenom, COUNT(i.id) as nb_incidents FROM incidents i JOIN trajets t ON i.trajet_id=t.id JOIN chauffeurs c ON t.chauffeur_id=c.id GROUP BY c.id ORDER BY nb_incidents DESC LIMIT 1
+- "Véhicules en maintenance ?" → SELECT immatriculation, kilometrage, date_acquisition FROM vehicules WHERE statut='maintenance'
+"""
 # ── Connexion MySQL ────────────────────────────────────────────
 def get_db():
     return mysql.connector.connect(**DB_CONFIG)
@@ -104,6 +110,18 @@ async def ask_llm(question: str) -> dict:
         if match:
             return json.loads(match.group())
         raise ValueError("Réponse LLM invalide")
+def is_safe_sql(sql: str) -> bool:
+    """Vérifie que la requête est bien un SELECT et ne contient rien de dangereux."""
+    if not sql:
+        return False
+    sql_upper = sql.strip().upper()
+    # Doit commencer par SELECT
+    if not sql_upper.startswith("SELECT"):
+        return False
+    # Mots-clés interdits
+    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE",
+                 "CREATE", "GRANT", "EXEC", "EXECUTE", "--", ";--"]
+    return not any(kw in sql_upper for kw in forbidden)
 
 # ── Routes API ─────────────────────────────────────────────────
 class ChatMessage(BaseModel):
@@ -111,7 +129,6 @@ class ChatMessage(BaseModel):
 
 @app.post("/api/chat")
 async def chat(msg: ChatMessage):
-    """Point d'entrée principal : question → SQL → résultats"""
     try:
         llm_response = await ask_llm(msg.question)
         sql = llm_response.get("sql")
@@ -120,13 +137,13 @@ async def chat(msg: ChatMessage):
         if not sql:
             return {"answer": explication, "data": [], "sql": None}
 
+        #  Validation de sécurité
+        if not is_safe_sql(sql):
+            raise HTTPException(status_code=400, 
+                detail="Requête non autorisée : seules les requêtes SELECT sont permises.")
+
         data = execute_query(sql)
-        return {
-            "answer": explication,
-            "data": data,
-            "sql": sql,
-            "count": len(data),
-        }
+        return {"answer": explication, "data": data, "sql": sql, "count": len(data)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
